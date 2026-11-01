@@ -1,3 +1,4 @@
+#include "../src/kext/rtw89_bssid.h"
 // SPDX-License-Identifier: GPL-2.0
 /*
  * rtw89ctl: talk to a loaded AirPort_RTW89 kext.
@@ -47,7 +48,7 @@ static io_service_t find_service(void)
 
 /* @ssid, @passphrase: sent along as raw bytes when not NULL (for "join"). */
 static kern_return_t send_command_join(io_service_t service, const char *command,
-                                       const char *ssid, const char *passphrase)
+                                       const char *ssid, const char *passphrase, const unsigned char *bssid)
 {
     CFStringRef value = CFStringCreateWithCString(NULL, command, kCFStringEncodingUTF8);
     CFMutableDictionaryRef dict = CFDictionaryCreateMutable(NULL, 2,
@@ -68,6 +69,11 @@ static kern_return_t send_command_join(io_service_t service, const char *command
         CFDictionarySetValue(dict, CFSTR("RTW89Passphrase"), data);
         CFRelease(data);
     }
+    if (bssid) {
+        CFDataRef data = CFDataCreate(NULL, bssid, 6);
+        CFDictionarySetValue(dict, CFSTR("RTW89BSSID"), data);
+        CFRelease(data);
+    }
     kr = IORegistryEntrySetCFProperties(service, dict);
 
     CFRelease(dict);
@@ -77,7 +83,7 @@ static kern_return_t send_command_join(io_service_t service, const char *command
 
 static kern_return_t send_command(io_service_t service, const char *command)
 {
-    return send_command_join(service, command, NULL, NULL);
+    return send_command_join(service, command, NULL, NULL, NULL);
 }
 
 static long get_long(io_service_t service, CFStringRef key)
@@ -477,7 +483,7 @@ int main(int argc, char **argv)
          strcmp(command, "join") && strcmp(command, "leave") && strcmp(command, "probe") &&
          strcmp(command, "drop")) ||
         (!strcmp(command, "join") && argc < 3)) {
-        fprintf(stderr, "usage: rtw89ctl up|down|scan|join SSID|leave|status|log|coex|probe|drop|flush on|off|ax on|off|"
+        fprintf(stderr, "usage: rtw89ctl up|down|scan|join SSID [BSSID]|leave|status|log|coex|probe|drop|flush on|off|ax on|off|"
                         "rejoin on|off\n");
         return 2;
     }
@@ -485,9 +491,14 @@ int main(int argc, char **argv)
     if (!strcmp(command, "join")) {
         /* Typed at the prompt, not on the command line, so the password does
          * not end up in the shell history or the process list. */
+        unsigned char bssid[6];
+        if (argc > 4 || (argc == 4 && !rtw89_parse_bssid(argv[3], bssid))) {
+            fprintf(stderr, "BSSID must be a nonzero unicast address: aa:bb:cc:dd:ee:ff\n");
+            return 1;
+        }
         char *pass = getpass("Wi-Fi password (Return for an open network): ");
 
-        kr = send_command_join(service, command, argv[2], pass);
+        kr = send_command_join(service, command, argv[2], pass, argc == 4 ? bssid : NULL);
         memset(pass, 0, strlen(pass));
     } else {
         kr = send_command(service, command);

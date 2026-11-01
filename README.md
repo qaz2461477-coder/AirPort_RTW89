@@ -1,5 +1,12 @@
 # AirPort_RTW89
 
+> **RTL8922AE on macOS 26:** this fork adds a native Wi-Fi driver and a Bluetooth fix. See
+> [docs/RTL8922AE-NATIVE.md](docs/RTL8922AE-NATIVE.md) for what works, and what does not:
+> no AirDrop, no WPA3. It is experimental and has run on one machine.
+>
+> 這個 fork 為 macOS 26 加入 RTL8922AE 的原生 Wi-Fi 驅動和藍牙修正。這是實驗性質的成果，
+> 只在一台機器上測過，也不支援 AirDrop 和 WPA3。安裝前請先備份 EFI，詳情見上面的文件。
+
 Native Wi-Fi on macOS for **Realtek's rtw89 PCIe cards**, by porting the Linux
 **rtw89** driver. The card shows up as Wi-Fi in macOS and is used from the
 Wi-Fi menu and System Settings like a Mac's own.

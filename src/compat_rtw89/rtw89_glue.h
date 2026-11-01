@@ -112,6 +112,9 @@ size_t rtw89_glue_coex_info(char *buf, size_t max);
  */
 int rtw89_glue_up(void);
 void rtw89_glue_down(void);
+/* System sleep preserves a proven network in RAM; explicit down still forgets. */
+void rtw89_glue_suspend(void);
+int rtw89_glue_resume(void);
 bool rtw89_glue_is_up(void);
 
 /*
@@ -204,6 +207,9 @@ int rtw89_glue_set_key(bool pairwise, int index, const uint8_t *key, size_t len,
 int rtw89_glue_set_pmk(const uint8_t *pmk, size_t len);
 /* The RSN element this side put in its association request; returns its length. */
 size_t rtw89_glue_assoc_rsn_ie(uint8_t *buf, size_t max);
+/* The network's last beacon, the whole 802.11 frame, up to @max bytes; returns
+ * its length, 0 if not associated. Any thread that holds no driver lock. */
+size_t rtw89_glue_beacon(uint8_t *buf, size_t max);
 
 /* The same with the 32-byte pairwise master key already derived (NULL: an
  * open network), and optionally one access point picked by @bssid. */

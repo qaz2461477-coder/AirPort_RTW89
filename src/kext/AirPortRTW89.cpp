@@ -1,3 +1,4 @@
+#include "rtw89_bssid.h"
 // SPDX-License-Identifier: GPL-2.0
 #include "AirPortRTW89.hpp"
 #include "rtw89_chips.h"
@@ -401,6 +402,8 @@ bool AirPort_RTW89::start(IOService *provider)
     int ret;
 
     rtw89_logring_init();
+    setProperty("RTW89 Diagnostic Build", "rtl8922ae-diag3");
+    diagnosticStage("start-enter");
     if (!super::start(provider))
         return false;
 
@@ -414,6 +417,7 @@ bool AirPort_RTW89::start(IOService *provider)
         return false;
     }
     _pci->retain();
+    diagnosticStage("pci-provider-ready");
 
     device.vendor = _pci->configRead16(kIOPCIConfigVendorID);
     device.device = _pci->configRead16(kIOPCIConfigDeviceID);
@@ -436,6 +440,7 @@ bool AirPort_RTW89::start(IOService *provider)
         return false;
     }
     _pciOpen = true;
+    diagnosticStage("pci-open");
 
     /* A device nobody has driven yet may have been left in D3. */
     IOByteCount pmCap = 0;
@@ -448,6 +453,7 @@ bool AirPort_RTW89::start(IOService *provider)
         }
     }
 
+    diagnosticStage("pci-power-ready");
     _pci->setMemoryEnable(true);
     _pci->setBusMasterEnable(true);
 
@@ -462,6 +468,7 @@ bool AirPort_RTW89::start(IOService *provider)
     device.mmio_len = _mmio->getLength();
     LOG("BAR 2 mapped, %llu bytes", (unsigned long long)device.mmio_len);
 
+    diagnosticStage("bar2-mapped");
     if (!setupInterrupt()) {
         LOG("could not set up the interrupt");
         teardown();
@@ -479,14 +486,17 @@ bool AirPort_RTW89::start(IOService *provider)
     platform.tx_wake = txWake;
     platform.scan_done = scanDone;
 
+    diagnosticStage("probe-enter");
     LOG("probing");
     ret = rtw89_glue_probe(&platform, &device);
     if (ret) {
+        diagnosticStage("probe-failed");
         LOG("probe failed: %d", ret);
         teardown();
         return false;
     }
     _probed = true;
+    diagnosticStage("probe-complete");
 
     publishInfo();
 
@@ -496,9 +506,13 @@ bool AirPort_RTW89::start(IOService *provider)
     /* With the front in the registry this is the Wi-Fi device's driver;
      * without it, an Ethernet-style interface of our own. */
     _powerNotifier = registerPrioritySleepWakeInterest(&AirPort_RTW89::powerEvent, this);
-    if (connectFront()) {
+    const bool diagnosticEthernet = getProperty("RTW89 Diagnostic Ethernet Only") == kOSBooleanTrue;
+    diagnosticStage(diagnosticEthernet ? "ethernet-only" : "front-connect-enter");
+    if (!diagnosticEthernet && connectFront()) {
         /* Wi-Fi is on until macOS says otherwise */
+        diagnosticStage("radio-up-enter");
         int up = radioUp();
+        diagnosticStage(up ? "radio-up-failed" : "radio-up-complete");
 
         if (up)
             LOG("could not start the radio: %d", up);
@@ -509,8 +523,15 @@ bool AirPort_RTW89::start(IOService *provider)
         return false;
     }
 
+    diagnosticStage("start-complete");
     registerService();
     return true;
+}
+
+void AirPort_RTW89::diagnosticStage(const char *stage)
+{
+    setProperty("RTW89 Diagnostic Stage", stage);
+    LOG("DIAG rtl8922ae-diag3 stage=%s", stage);
 }
 
 void AirPort_RTW89::publishInfo()
@@ -769,27 +790,53 @@ IOReturn AirPort_RTW89::setProperties(OSObject *properties)
         result = kIOReturnNotReady;
     } else if (command->isEqualTo("up")) {
         LOG("radio up");
+        diagnosticStage("radio-up-enter");
         ret = radioUp();
+        diagnosticStage(ret ? "radio-up-failed" : "radio-up-complete");
     } else if (command->isEqualTo("down")) {
         LOG("radio down");
         rtw89_glue_down();
     } else if (command->isEqualTo("scan")) {
+        diagnosticStage("scan-radio-up-enter");
         ret = radioUp();
-        if (!ret)
+        if (!ret) {
+            diagnosticStage("scan-request-enter");
             ret = rtw89_glue_scan();
+            diagnosticStage(ret ? "scan-request-failed" : "scan-request-accepted");
+        } else {
+            diagnosticStage("scan-radio-up-failed");
+        }
     } else if (command->isEqualTo("join")) {
         OSData *ssid = OSDynamicCast(OSData, dict->getObject("RTW89SSID"));
 
         OSData *pass = OSDynamicCast(OSData, dict->getObject("RTW89Passphrase"));
 
-        if (!ssid || !ssid->getLength()) {
+        OSObject *rawBssid = dict->getObject("RTW89BSSID");
+        OSData *bssid = OSDynamicCast(OSData, rawBssid);
+        if (rawBssid && (!bssid || bssid->getLength() != 6 ||
+            !rtw89_bssid_valid(static_cast<const unsigned char *>(bssid->getBytesNoCopy())))) {
+            result = kIOReturnBadArgument;
+        } else if (!ssid || !ssid->getLength() || ssid->getLength() > 32) {
             result = kIOReturnBadArgument;
         } else {
             LOG("join requested");
+            if (bssid) {
+                uint8_t pmk[32] = {};
+                ret = pass && pass->getLength() ? rtw89_glue_derive_pmk(
+                    static_cast<const uint8_t *>(ssid->getBytesNoCopy()), ssid->getLength(),
+                    static_cast<const char *>(pass->getBytesNoCopy()), pass->getLength(), pmk) : 0;
+                if (!ret)
+                    ret = rtw89_glue_join_pmk(
+                        static_cast<const uint8_t *>(ssid->getBytesNoCopy()), ssid->getLength(),
+                        static_cast<const uint8_t *>(bssid->getBytesNoCopy()),
+                        pass && pass->getLength() ? pmk : nullptr);
+                bzero(pmk, sizeof(pmk));
+            } else {
             ret = rtw89_glue_join(static_cast<const uint8_t *>(ssid->getBytesNoCopy()),
                                   ssid->getLength(),
                                   pass ? static_cast<const char *>(pass->getBytesNoCopy()) : nullptr,
                                   pass ? pass->getLength() : 0);
+            }
         }
     } else if (command->isEqualTo("flush-on") || command->isEqualTo("flush-off")) {
         rtw89_glue_set_ppdu_flush(command->isEqualTo("flush-on"));
@@ -863,8 +910,10 @@ void AirPort_RTW89::sleepRadio()
     /* from here on a request from macOS cannot bring the radio up */
     _asleep = true;
     _upBeforeSleep = _probed && rtw89_glue_is_up();
-    if (_upBeforeSleep)
-        rtw89_glue_down();
+    if (_upBeforeSleep) {
+        diagnosticStage("sleep-radio-suspend");
+        rtw89_glue_suspend();
+    }
     IOLockUnlock(_commandLock);
     if (_upBeforeSleep)
         publishLink();
@@ -881,8 +930,11 @@ void AirPort_RTW89::wakeRadio()
     clock_get_uptime(&start);
     IOLockLock(_commandLock);
     _asleep = false;
-    if (_upBeforeSleep)
-        ret = radioUp();
+    if (_upBeforeSleep) {
+        diagnosticStage("wake-radio-resume");
+        ret = rtw89_glue_resume();
+        diagnosticStage(ret ? "wake-radio-failed" : "wake-radio-ready");
+    }
     IOLockUnlock(_commandLock);
     clock_get_uptime(&end);
     absolutetime_to_nanoseconds(end - start, &end);

@@ -16,3 +16,7 @@ AirPort_RTW89 stands on the work of these projects and their contributors.
   OpenCore and Lilu.
 - **hostap** (wpa_supplicant/hostapd) and **Mbed TLS**: vendored for WPA3.
 - **Realtek**: the chip's firmware, from linux-firmware.
+- **BrcmPatchRAM** (Acidanthera): `BlueToolFixup`, which `tools/bluetooth/` patches for
+  the RTL8922. Licensed GPL-2.0.
+- **RealtekBluetoothFirmware** (thegwchr): loads the card's Bluetooth firmware. It is not
+  part of this repository, and is needed for Bluetooth.

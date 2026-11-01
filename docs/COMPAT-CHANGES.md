@@ -27,3 +27,19 @@
 | `linux/skbuff.h`, `rtw88_compat.c` | `skb_put` / `skb_push` check the room and stop (`rtw88_skb_panic`) instead of silently corrupting the heap, as Linux's `skb_over_panic` does. | ⬆ |
 | `linux/skbuff.h` | `dev_alloc_skb` / `netdev_alloc_skb` reserve `NET_SKB_PAD` (64) bytes of headroom like Linux. | — |
 | `rtw88_compat.c` | New hook `rtw88_napi_post_poll` (called on the datapath thread after every NAPI poll) and `rtw88_queue_datapath_delayed_work()` (queue work on that thread). rtw89 uses them to pass on received frames the driver is holding for a PPDU status report that does not come; see `src/compat_rtw89/rtw89_core_wrap.c`. | — |
+
+## 2026-11-01: RTL8922AE sleep reconnect
+
+Added glue_suspend/glue_resume to preserve the proven SSID/PMK only in memory
+across system sleep, while explicit down still clears it. Resume brings the
+radio back and queues the existing reconnection worker when enabled. No
+vendored Linux code changed. Host tests cover suspend preserving reconnection
+intent, explicit down forgetting it, and full cleanup after repeated cycles.
+
+## 2026-11-02: last beacon for native Wi-Fi
+
+Tahoe polls BEACON_INFO to tell a live network from a stale one. rtw89_mlme.c keeps
+the AP's last whole beacon, and rtw89_glue_beacon() reads it. The writer stays under
+the wiphy mutex; readers use a sequence counter, because mlme is cleared on every
+radio up and a lock kept there would not outlive that. No vendored Linux code
+changed. The hosttest checks the frame, its type, and truncation to a small buffer.

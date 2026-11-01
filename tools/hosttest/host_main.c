@@ -1022,6 +1022,22 @@ static int test_keep(void)
     EXPECT(ap_handshake(gtk1, 1) == 0);
     EXPECT(wait_link(RTW89_GLUE_LINK_CONNECTED));
 
+    /* ---- the last beacon, whole, for whoever watches the network ---- */
+    {
+        uint8_t beacon[0x800], tiny[10];
+        size_t beacon_len = 0;
+
+        for (i = 0; i < 100 && !beacon_len; i++) {
+            ap_send_beacon();
+            usleep(10 * 1000);
+            beacon_len = rtw89_glue_beacon(beacon, sizeof(beacon));
+        }
+        EXPECT(beacon_len >= 36);
+        EXPECT((beacon[0] & 0xfc) == 0x80);
+        EXPECT(rtw89_glue_beacon(tiny, sizeof(tiny)) == sizeof(tiny));
+        EXPECT(tiny[0] == beacon[0]);
+    }
+
     /* ---- the AP's country picks the TX power tables (reg_work) ---- */
     usleep(100 * 1000);
     rtw89_glue_link(&link);
@@ -1657,9 +1673,27 @@ static int test_probed_device(void)
         EXPECT(ret == 0 && rtw89_glue_is_up());
         if (!ret) {
             failures += test_join();
+            static const uint8_t sleep_gtk[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+            rtw89_glue_set_rejoin(true);
+            EXPECT(join_testnet(AP_PASSWORD, 0));
+            EXPECT(wait_link(RTW89_GLUE_LINK_ASSOCIATED));
+            EXPECT(ap_handshake(sleep_gtk, 1) == 0);
+            EXPECT(wait_link(RTW89_GLUE_LINK_CONNECTED));
+            rtw89_glue_suspend();
+            EXPECT(!rtw89_glue_is_up());
+            EXPECT(rtw89_glue_resume() == 0);
+            struct rtw89_glue_link after_sleep;
+            rtw89_glue_link(&after_sleep);
+            EXPECT(after_sleep.rejoining);
             rtw89_glue_down();
             EXPECT(!rtw89_glue_is_up() && !rtw89_glue_scanning());
             printf("== radio down again (sleep)\n");
+            EXPECT(rtw89_glue_resume() == 0);
+            /* Explicit down above forgot credentials: resume must not reconnect. */
+            struct rtw89_glue_link resumed;
+            rtw89_glue_link(&resumed);
+            EXPECT(!resumed.rejoining);
+            rtw89_glue_down();
         }
     }
 #undef EXPECT

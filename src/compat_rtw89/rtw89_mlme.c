@@ -29,6 +29,8 @@
 #define MLME_PROBE_WAIT     (HZ / 2)    /* for a probing frame's fate (probe_wait_ms) */
 #define MLME_PROBE_TRIES    2           /* max_nullfunc_tries */
 
+#define RTW89_MLME_BEACON_MAX 0x800
+
 static struct {
     bool running;
     struct rtw89_m80211_local *local;
@@ -113,6 +115,11 @@ static struct {
     /* what the AP's beacons said last */
     u32 beacon_hash;
     bool beacon_hash_valid;
+    /* The AP's last beacon, whole: rtw89_mlme_copy_beacon(). Written under the
+     * wiphy mutex; readers go by the counter, odd while it is being written. */
+    u32 beacon_seq;
+    size_t beacon_frame_len;
+    u8 beacon_frame[RTW89_MLME_BEACON_MAX];
     struct cfg80211_chan_def beacon_def;    /* the channel by the first beacon */
     bool beacon_def_valid;
     int wmm_param_set, mu_edca_param_set;   /* parameter set counts in use, -1: none */
@@ -128,6 +135,18 @@ static struct {
     struct wiphy_work lost_work;
     struct wiphy_delayed_work timeout_work;
 } mlme;
+
+/* Keep @frame as the AP's last beacon; NULL: there is none any more. */
+static void mlme_keep_beacon(const u8 *frame, size_t len)
+{
+    if (len > sizeof(mlme.beacon_frame))
+        return;
+    __atomic_add_fetch(&mlme.beacon_seq, 1, __ATOMIC_ACQ_REL);
+    mlme.beacon_frame_len = len;
+    if (frame)
+        memcpy(mlme.beacon_frame, frame, len);
+    __atomic_add_fetch(&mlme.beacon_seq, 1, __ATOMIC_ACQ_REL);
+}
 
 /* The RSN element we put in the association request. Message 2 of the 4-way
  * handshake must repeat it byte for byte. */
@@ -498,6 +517,7 @@ static void mlme_teardown(u16 deauth_reason)
     mlme.csa_pending = false;
     mlme.beacon_hash_valid = false;
     mlme.beacon_def_valid = false;
+    mlme_keep_beacon(NULL, 0);
 
     /* no more data in either direction, and nothing left queued for the AP */
     rtw89_data_detach();
@@ -2600,6 +2620,25 @@ static u32 mlme_beacon_hash(const struct ieee80211_mgmt *mgmt, const u8 *ies, si
     return hash;
 }
 
+size_t rtw89_mlme_copy_beacon(u8 *buf, size_t max)
+{
+    int tries;
+
+    for (tries = 0; tries < 4; tries++) {
+        u32 seq = __atomic_load_n(&mlme.beacon_seq, __ATOMIC_ACQUIRE);
+        size_t len = mlme.beacon_frame_len;
+
+        if (seq & 1)
+            continue;
+        if (len > max)
+            len = max;
+        memcpy(buf, mlme.beacon_frame, len);
+        if (__atomic_load_n(&mlme.beacon_seq, __ATOMIC_ACQUIRE) == seq)
+            return len;
+    }
+    return 0;
+}
+
 /* ieee80211_rx_mgmt_beacon(), as far as this MLME goes. */
 static void mlme_rx_beacon(const struct ieee80211_mgmt *mgmt, size_t len, u16 freq)
 {
@@ -2623,6 +2662,7 @@ static void mlme_rx_beacon(const struct ieee80211_mgmt *mgmt, size_t len, u16 fr
     ies_len = len - fixed;
 
     mlme.beacons++;
+    mlme_keep_beacon((const u8 *)mgmt, len);
     if (mlme.poll) {
         mlme_info("a beacon arrived: still connected");
         mlme_reset_ap_probe();

@@ -1180,6 +1180,11 @@ bool rtw89_glue_is_up(void)
     return glue.up;
 }
 
+size_t rtw89_glue_beacon(uint8_t *buf, size_t max)
+{
+    return glue.up ? rtw89_mlme_copy_beacon(buf, max) : 0;
+}
+
 static int glue_up_locked(void);
 
 int rtw89_glue_up(void)
@@ -1268,6 +1273,40 @@ void rtw89_glue_down(void)
     mutex_lock(&glue.cmd_lock);
     glue_down_locked();
     mutex_unlock(&glue.cmd_lock);
+}
+
+void rtw89_glue_suspend(void)
+{
+    typeof(glue.want) saved;
+    if (!glue.active)
+        return;
+    /* Stop the worker before taking its command lock. */
+    glue.rejoining = false;
+    cancel_delayed_work_sync(&glue.rejoin_work);
+    mutex_lock(&glue.cmd_lock);
+    saved = glue.want;
+    glue_forget_network();
+    glue_down_locked();
+    glue.want = saved;
+    memset(&saved, 0, sizeof(saved));
+    mutex_unlock(&glue.cmd_lock);
+}
+
+int rtw89_glue_resume(void)
+{
+    int ret;
+    if (!glue.probed)
+        return -ENODEV;
+    mutex_lock(&glue.cmd_lock);
+    ret = glue_up_locked();
+    if (!ret && glue.want.valid && glue.want.proven && !glue.rejoin_off) {
+        glue.rejoining = true;
+        glue.rejoin_scanned = false;
+        glue.rejoin_tries = 0;
+        glue_rejoin_queue(0);
+    }
+    mutex_unlock(&glue.cmd_lock);
+    return ret;
 }
 
 static void glue_down_locked(void)

@@ -14,6 +14,26 @@ import sys
 from pathlib import Path
 
 
+def parse_exports(output):
+    found = {}
+    multiple = None
+    for line in output.splitlines():
+        match = re.match(r"^\s+(\S+) in (.+)$", line)
+        if match:
+            symbol, location = match.groups()
+            multiple = symbol if location == "multiple:" else None
+            library = re.search(r": (\S+) \(", location)
+            if library:
+                found.setdefault(symbol, set()).add(library.group(1))
+        elif multiple:
+            library = re.match(r"^\s+/.*: (\S+) \(", line)
+            if library:
+                found.setdefault(multiple, set()).add(library.group(1))
+            else:
+                multiple = None
+    return found
+
+
 def main():
     kext = Path(sys.argv[1])
     info = plistlib.loads((kext / "Contents/Info.plist").read_bytes())
@@ -24,9 +44,7 @@ def main():
     wanted = {s.strip() for s in nm.stdout.splitlines() if s.strip()}
 
     km = subprocess.run(["kmutil", "libraries", "-p", str(kext)], capture_output=True, text=True)
-    found = {}
-    for m in re.finditer(r"^\s+(\S+) in \S+: (\S+) \(", km.stdout + km.stderr, re.M):
-        found.setdefault(m.group(1), set()).add(m.group(2))
+    found = parse_exports(km.stdout + km.stderr)
 
     # A C++ class keeps spare vtable slots named <Class>::_RESERVED<Class><n>().
     # When a later version of the class starts using a slot, that symbol is no

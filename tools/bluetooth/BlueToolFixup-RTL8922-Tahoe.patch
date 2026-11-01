@@ -1,0 +1,196 @@
+--- a/BrcmPatchRAM/BlueToolFixup.cpp
++++ b/BrcmPatchRAM/BlueToolFixup.cpp
+@@ -159,8 +159,175 @@
+     0x90, 0x90,
+     0x90, 0x90, 0x90, 0x90,
+     0x90, 0x90
++};
++
++// Workaround for controllers that do not advertise Set Event Mask Page 2, such as RTL8922.
++// bluetoothd rejects the command locally with 0x274 and aborts HCI initialization.
++// Continue with the next init step instead, as LE_SetDefaultSubrate does.
++static const uint8_t kSkipEventMaskPage2FailureOriginal26_7[] =
++{
++    0x89, 0xDE,                   // mov  esi, ebx
++    0xE8, 0x3D, 0xE3, 0x0D, 0x00, // call <fail init step>
++    0x5B                          // pop  rbx
++};
++
++static const uint8_t kSkipEventMaskPage2FailurePatched26_7[] =
++{
++    0x89, 0xDE,                   // mov  esi, ebx
++    0xE8, 0xA7, 0xE2, 0x0D, 0x00, // call <next init step>
++    0x5B                          // pop  rbx
++};
++
++// Workaround for controllers that fail LE scan enable with 718, such as RTL8922.
++// LeObserver::handleScanStoppedEvent only tolerates 712 and restarts bluetoothd otherwise.
++// Take its existing early return so that a failed scan does not restart the daemon.
++static const uint8_t kSkipScanStoppedRestartOriginal26_7[] =
++{
++    0x84, 0xC0,                         // test al, al
++    0x75, 0x62,                         // jnz  short <return>
++    0xE8, 0x85, 0x41, 0xC5, 0xFF        // call <get daemon>
++};
++
++static const uint8_t kSkipScanStoppedRestartPatched26_7[] =
++{
++    0x84, 0xC0,                         // test al, al
++    0xEB, 0x62,                         // jmp  short <return>
++    0xE8, 0x85, 0x41, 0xC5, 0xFF        // call <get daemon>
++};
++
++// Workaround for controllers that enforce the LE own address type, such as RTL8922.
++// bluetoothd selects a random own address but never sends LE Set Random Address for
++// these chipsets, so LE Set Scan Enable fails with Invalid HCI Command Parameters.
++// Always return the public address entry from the local address table.
++static const uint8_t kUsePublicLeAddressOriginal26_7[] =
++{
++    0x55,                               // push  rbp
++    0x48, 0x89, 0xE5,                   // mov   rbp, rsp
++    0x0F, 0xB6, 0x05, 0x66, 0xBE, 0x91, 0x00 // movzx eax, <current address index>
++};
++
++static const uint8_t kUsePublicLeAddressPatched26_7[] =
++{
++    0x55,                               // push  rbp
++    0x48, 0x89, 0xE5,                   // mov   rbp, rsp
++    0x31, 0xC0,                         // xor   eax, eax
++    0x90, 0x90, 0x90, 0x90, 0x90        // nop
++};
++
++// Workaround for controllers that never complete Read Remote Version on LE links, such
++// as RTL8922. bluetoothd waits for that event before reading remote features, so GATT
++// and pairing never start. Defer through the existing timer path, because the caller
++// marks the connection state only after returning, then report a synthetic success.
++static const uint8_t kDeferRemoteVersionOriginal26_7[] =
++{
++    0x8B, 0x05, 0x7E, 0x2C, 0x92, 0x00, // mov  eax, <remote version delay>
++    0x85, 0xC0,                         // test eax, eax
++    0x74, 0x41                          // jz   short <read now>
++};
++
++static const uint8_t kDeferRemoteVersionPatched26_7[] =
++{
++    0xB8, 0x01, 0x00, 0x00, 0x00, 0x90, // mov  eax, 1
++    0x85, 0xC0,                         // test eax, eax
++    0x74, 0x41                          // jz   short <read now>
++};
++
++static const uint8_t kSkipRemoteVersionReadOriginal26_7[] =
++{
++    0x55,                               // push rbp
++    0x48, 0x89, 0xE5,                   // mov  rbp, rsp
++    0x48, 0x89, 0xFE,                   // mov  rsi, rdi
++    0xBF, 0x17, 0x00, 0x00, 0x00,       // mov  edi, <Read Remote Version>
++    0x31, 0xC0,                         // xor  eax, eax
++    0x5D,                               // pop  rbp
++    0xE9, 0xAB, 0x2C, 0xF7              // jmp  <send command>
++};
++
++static const uint8_t kSkipRemoteVersionReadPatched26_7[] =
++{
++    0x48, 0x89, 0xFE,                   // mov  rsi, rdi
++    0x31, 0xFF,                         // xor  edi, edi
++    0x6A, 0x0C,                         // push 12
++    0x5A,                               // pop  rdx
++    0x6A, 0x5D,                         // push 0x5D
++    0x59,                               // pop  rcx
++    0x45, 0x31, 0xC0,                   // xor  r8d, r8d
++    0xE9, 0x68, 0xD3, 0x00, 0x00        // jmp  <remote version callback>
+ };
+ 
++// Workaround for controllers that report HCI 5.3 and Set Min Encryption Key Size but do
++// not advertise Set Event Mask Page 2, such as RTL8922. bluetoothd changes the expected
++// completion event of Set Connection Encryption and LE Start Encryption from Encryption
++// Change v1 to v2 before it sends Page 2. Page 2 then fails and v2 is never enabled, so
++// both commands time out after the controller has reported success with v1. Keep v1.
++static const uint8_t kKeepEncryptionChangeV1Original26_7[] =
++{
++    0xB1, 0x59,                         // mov  cl, <Encryption Change v2>
++    0x88, 0x88, 0x94, 0x01, 0x00, 0x00, // mov  [<Set Connection Encryption event>], cl
++    0x88, 0x88, 0x6C, 0x11, 0x00, 0x00  // mov  [<LE Start Encryption event>], cl
++};
++
++static const uint8_t kKeepEncryptionChangeV1Patched26_7[] =
++{
++    0xB1, 0x08,                         // mov  cl, <Encryption Change v1>
++    0x88, 0x88, 0x94, 0x01, 0x00, 0x00, // mov  [<Set Connection Encryption event>], cl
++    0x88, 0x88, 0x6C, 0x11, 0x00, 0x00  // mov  [<LE Start Encryption event>], cl
++};
++
++// Workaround for third-party controllers that support LE data length extension and 2M,
++// such as RTL8922. After reading remote features bluetoothd waits for LE Data Length
++// Change and LE PHY Update Complete before GATT and pairing start, but the LE event mask
++// it uses for these controllers disables both. Add those two events to that mask.
++static const uint8_t kLeEventMaskOriginal26_7[] =
++{
++    0x1F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // third-party LE event mask
++    0x7F, 0xFA, 0x86, 0x3F, 0xFF, 0xF3, 0x0B, 0x00  // Apple controller LE event mask
++};
++
++static const uint8_t kLeEventMaskPatched26_7[] =
++{
++    0x5F, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // adds bits 6 and 11
++    0x7F, 0xFA, 0x86, 0x3F, 0xFF, 0xF3, 0x0B, 0x00  // Apple controller LE event mask
++};
++
++// Workaround for controllers that start a PHY update as soon as they connect, such as
++// RTL8922. bluetoothd prefers 2M only, so the controller starts one before it reads the
++// peer's features. Allow 1M as well, so that a peer without 2M can finish its link layer
++// procedures.
++static const uint8_t kDefaultPhyOriginal26_7[] =
++{
++    0x80, 0xFA, 0x02,                   // cmp     dl, 2
++    0xBE, 0x01, 0x00, 0x00, 0x00,       // mov     esi, <1M>
++    0x0F, 0x43, 0xF2,                   // cmovae  esi, edx
++    0x0F, 0xB6, 0xC9                    // movzx   ecx, cl
++};
++
++static const uint8_t kDefaultPhyPatched26_7[] =
++{
++    0x80, 0xFA, 0x02,                   // cmp     dl, 2
++    0xBE, 0x03, 0x00, 0x00, 0x00,       // mov     esi, <1M and 2M>
++    0x90, 0x90, 0x90,                   // nop
++    0x0F, 0xB6, 0xC9                    // movzx   ecx, cl
++};
++
++// With 1M allowed the controller may raise no LE PHY Update Complete, and bluetoothd only
++// waits for that event, so take the path it uses once the PHY is ready.
++static const uint8_t kSkipPhyWaitOriginal26_7[] =
++{
++    0x80, 0xBB, 0x99, 0x00, 0x00, 0x00, 0x01, // cmp  byte [rbx + <phy ready>], 1
++    0x0F, 0x85, 0x86, 0x00, 0x00, 0x00,       // jne  <wait for phy or length>
++    0x48, 0x89, 0xDF,                         // mov  rdi, rbx
++    0xBE, 0x04, 0x00, 0x00, 0x00              // mov  esi, 4
++};
++
++static const uint8_t kSkipPhyWaitPatched26_7[] =
++{
++    0x80, 0xBB, 0x99, 0x00, 0x00, 0x00, 0x01, // cmp  byte [rbx + <phy ready>], 1
++    0x90, 0x90, 0x90, 0x90, 0x90, 0x90,       // nop
++    0x48, 0x89, 0xDF,                         // mov  rdi, rbx
++    0xBE, 0x04, 0x00, 0x00, 0x00              // mov  esi, 4
++};
++
+ static bool shouldPatchBoardId = false;
+ static bool shouldPatchAddress = false;
+ static bool shouldPatchNvramCheck = false;
+@@ -230,6 +397,17 @@
+                 searchAndPatch(data, PAGE_SIZE, path, kBadChipsetCheckOriginal13_3, kBadChipsetCheckPatched13_3);
+             if (getKernelVersion() >= KernelVersion::Sequoia)
+                 searchAndPatch(data, PAGE_SIZE, path, kBadChipsetCheckOriginal15_4, kBadChipsetCheckPatched15_4);
++            if (getKernelVersion() == KernelVersion::Tahoe) {
++                searchAndPatch(data, PAGE_SIZE, path, kSkipEventMaskPage2FailureOriginal26_7, kSkipEventMaskPage2FailurePatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kSkipScanStoppedRestartOriginal26_7, kSkipScanStoppedRestartPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kUsePublicLeAddressOriginal26_7, kUsePublicLeAddressPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kDeferRemoteVersionOriginal26_7, kDeferRemoteVersionPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kSkipRemoteVersionReadOriginal26_7, kSkipRemoteVersionReadPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kKeepEncryptionChangeV1Original26_7, kKeepEncryptionChangeV1Patched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kLeEventMaskOriginal26_7, kLeEventMaskPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kDefaultPhyOriginal26_7, kDefaultPhyPatched26_7);
++                searchAndPatch(data, PAGE_SIZE, path, kSkipPhyWaitOriginal26_7, kSkipPhyWaitPatched26_7);
++            }
+             if (shouldPatchNvramCheck)
+                 searchAndPatchWithMask(data, PAGE_SIZE, path, kSkipInternalControllerNVRAMCheck13_3, sizeof(kSkipInternalControllerNVRAMCheck13_3), kSkipInternalControllerNVRAMCheckMask13_3, sizeof(kSkipInternalControllerNVRAMCheckMask13_3), kSkipInternalControllerNVRAMCheckPatched13_3, sizeof(kSkipInternalControllerNVRAMCheckPatched13_3), nullptr, 0);
+             if (shouldPatchBoardId)

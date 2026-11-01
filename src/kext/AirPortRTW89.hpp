@@ -69,6 +69,7 @@ private:
     bool setupInterrupt();
     bool setupInterface();
     void interruptOccurred(IOInterruptEventSource *source, int count);
+    void diagnosticStage(const char *stage);
     void publishInfo();
     void publishScanResults();
     void publishLink();

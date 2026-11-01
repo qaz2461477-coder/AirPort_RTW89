@@ -65,6 +65,7 @@ IOWorkLoop *AirPortRTW89Front::getWorkLoop() const
 
 bool AirPortRTW89Front::start(IOService *provider)
 {
+    setProperty("RTW89 Front Stage", "start-enter");
     _pci = OSDynamicCast(IOPCIDevice, provider);
     if (!_pci)
         return false;
@@ -73,17 +74,20 @@ bool AirPortRTW89Front::start(IOService *provider)
         return false;
     _mac = kPlaceholderMac;
 
+    setProperty("RTW89 Front Stage", "super-start-enter");
     if (!super::start(provider)) {
         LOG("IO80211Controller::start failed");
         return false;
     }
     _superStarted = true;
+    setProperty("RTW89 Front Stage", "super-start-complete");
 
     /* The network interface is attached when the driver proper connects for
      * the first time: only it can read the card's address. Until then this
      * is a controller without an interface, which the driver finds by class. */
     setProperty("RTW89 Front API", RTW89_FRONT_API_VERSION, 32);
     setProperty("RTW89 Back Connected", kOSBooleanFalse);
+    setProperty("RTW89 Front Stage", "waiting-for-backend");
     registerService();
     LOG("started; waiting for the driver");
     return true;
@@ -198,6 +202,7 @@ IOReturn AirPortRTW89Front::connectBack(const struct rtw89_back_ops *back,
     setProperty(kIOMACAddress, _mac.bytes, kIOEthernetAddressSize);
 
     if (!_netif) {
+        setProperty("RTW89 Front Stage", "attach-interface-enter");
         /* medium first, then the interface, as AirportItlwm does */
         if (!publishMedium() || !attachInterface((IONetworkInterface **)&_netif, true) || !_netif) {
             LOG("could not attach the network interface");
@@ -221,6 +226,7 @@ IOReturn AirPortRTW89Front::connectBack(const struct rtw89_back_ops *back,
     front->super_ioctl_set = opSuperIoctlSet;
     front->set_apple_rsn = opSetAppleRsn;
 
+    setProperty("RTW89 Front Stage", "backend-connected");
     setProperty("RTW89 Back Connected", kOSBooleanTrue);
     LOG("driver connected, address %02x:%02x:%02x:%02x:%02x:%02x", _mac.bytes[0], _mac.bytes[1],
         _mac.bytes[2], _mac.bytes[3], _mac.bytes[4], _mac.bytes[5]);

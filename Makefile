@@ -234,7 +234,7 @@ saetest:
 	    || { grep -E 'error' $(BUILD_DIR)/log/sae_test_build.log >&2; exit 1; }
 	$(call hostrun,$(SAETEST),,sae_test)
 
-hosttest: link
+hosttest: link bssidtest
 	@cc -c -O1 -g -Wall -o $(BUILD_DIR)/out/host_kernel.o tools/hosttest/host_kernel.c
 	@cc -c -O1 -g -Wall -I$(COMPAT89_DIR) -o $(BUILD_DIR)/out/host_main.o tools/hosttest/host_main.c
 	@$(CC) $(DRIVER_CFLAGS) -MF /dev/null -c tools/hosttest/selftest.c -o $(BUILD_DIR)/out/selftest.o 2> $(BUILD_DIR)/log/hosttest_selftest.log \
@@ -414,3 +414,97 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 -include $(ALL_OBJS:.o=.d) $(KEXT_OBJS:.o=.d)
+
+.PHONY: bssidtest
+bssidtest:
+	@mkdir -p $(BUILD_DIR)/out
+	@cc -Wall -Wextra -Werror -fsanitize=address,undefined tools/hosttest/bssid_test.c -o $(BUILD_DIR)/out/bssid_test
+	@$(BUILD_DIR)/out/bssid_test
+
+# Tahoe metadata-only probe; no PCI matching or network-object allocation.
+.PHONY: nativeprobe
+nativeprobe:
+	@mkdir -p $(BUILD_DIR)/native-probe/RTW89NativeProbe.kext/Contents/MacOS
+	@$(CXX) $(filter-out -D__IO80211_TARGET=__MAC_13_0,$(KEXT_CXXFLAGS)) -Wno-inconsistent-missing-override -Ireference/tahoe-headers -DAIRPORT_WCL -D__MAC_26_0=260000 -D__MAC_15_2=150200 -D__IO80211_TARGET=260000 -c src/native_probe/RTW89NativeProbe.cpp -o $(BUILD_DIR)/native-probe/probe.o
+	@$(CC) $(FW_CFLAGS) -c src/native_probe/kmod_info.c -o $(BUILD_DIR)/native-probe/kmod_info.o
+	@$(CXX) $(ARCH) $(MINOS) -isysroot $(SDK) -nostdlib -Xlinker -kext -L$(MKSDK)/Library/x86_64 $(BUILD_DIR)/native-probe/probe.o $(BUILD_DIR)/native-probe/kmod_info.o -lkmod -lcc_kext -o $(BUILD_DIR)/native-probe/RTW89NativeProbe.kext/Contents/MacOS/RTW89NativeProbe
+	@cp src/native_probe/Info.plist $(BUILD_DIR)/native-probe/RTW89NativeProbe.kext/Contents/
+	@codesign --force --sign - $(BUILD_DIR)/native-probe/RTW89NativeProbe.kext
+	@python3 tools/check_kpi.py $(BUILD_DIR)/native-probe/RTW89NativeProbe.kext
+
+# Tahoe controller bring-up only; does not attach an interface or touch PCI.
+.PHONY: moderncontroller
+moderncontroller:
+	@mkdir -p $(BUILD_DIR)/modern-controller/RTW89ModernController.kext/Contents/MacOS
+	@$(CXX) $(filter-out -D__IO80211_TARGET=__MAC_13_0,$(KEXT_CXXFLAGS)) -Wno-inconsistent-missing-override -Ireference/tahoe-headers -DAIRPORT_WCL -D__MAC_26_0=260000 -D__MAC_15_2=150200 -D__IO80211_TARGET=260000 -c src/native_controller/RTW89ModernController.cpp -o $(BUILD_DIR)/modern-controller/probe.o
+	@$(CC) $(FW_CFLAGS) -c src/native_controller/kmod_info.c -o $(BUILD_DIR)/modern-controller/kmod_info.o
+	@$(CXX) $(ARCH) $(MINOS) -isysroot $(SDK) -nostdlib -Xlinker -kext -L$(MKSDK)/Library/x86_64 $(BUILD_DIR)/modern-controller/probe.o $(BUILD_DIR)/modern-controller/kmod_info.o -lkmod -lcc_kext -o $(BUILD_DIR)/modern-controller/RTW89ModernController.kext/Contents/MacOS/RTW89ModernController
+	@cp src/native_controller/Info.plist $(BUILD_DIR)/modern-controller/RTW89ModernController.kext/Contents/
+	@codesign --force --sign - $(BUILD_DIR)/modern-controller/RTW89ModernController.kext
+	@python3 tools/check_kpi.py $(BUILD_DIR)/modern-controller/RTW89ModernController.kext
+
+# Unpublished native interface initialization, using the known-good controller.
+.PHONY: nativeinterface
+nativeinterface:
+	@mkdir -p $(BUILD_DIR)/native-interface/RTW89NativeInterfaceProbe.kext/Contents/MacOS
+	@$(CXX) $(filter-out -D__IO80211_TARGET=__MAC_13_0,$(KEXT_CXXFLAGS)) -Wno-inconsistent-missing-override -Ireference/tahoe-headers -DAIRPORT_WCL -D__MAC_26_0=260000 -D__MAC_15_2=150200 -D__IO80211_TARGET=260000 -c src/native_interface/RTW89NativeInterfaceProbe.cpp -o $(BUILD_DIR)/native-interface/probe.o
+	@$(CC) $(FW_CFLAGS) -c src/native_interface/kmod_info.c -o $(BUILD_DIR)/native-interface/kmod_info.o
+	@$(CXX) $(ARCH) $(MINOS) -isysroot $(SDK) -nostdlib -Xlinker -kext -L$(MKSDK)/Library/x86_64 $(BUILD_DIR)/native-interface/probe.o $(BUILD_DIR)/native-interface/kmod_info.o -lkmod -lcc_kext -o $(BUILD_DIR)/native-interface/RTW89NativeInterfaceProbe.kext/Contents/MacOS/RTW89NativeInterfaceProbe
+	@cp src/native_interface/Info.plist $(BUILD_DIR)/native-interface/RTW89NativeInterfaceProbe.kext/Contents/
+	@codesign --force --sign - $(BUILD_DIR)/native-interface/RTW89NativeInterfaceProbe.kext
+	@python3 tools/check_kpi.py $(BUILD_DIR)/native-interface/RTW89NativeInterfaceProbe.kext
+
+.PHONY: nativeregistration
+nativeregistration:
+	@mkdir -p $(BUILD_DIR)/native-registration/RTW89NativeRegistration.kext/Contents/MacOS
+	@$(CXX) $(filter-out -D__IO80211_TARGET=__MAC_13_0,$(KEXT_CXXFLAGS)) -Wno-inconsistent-missing-override -Ireference/tahoe-headers -DAIRPORT_WCL -D__MAC_26_0=260000 -D__MAC_15_2=150200 -D__IO80211_TARGET=260000 -c src/native_registration/RTW89NativeRegistration.cpp -o $(BUILD_DIR)/native-registration/registration.o
+	@$(CC) $(FW_CFLAGS) -c src/native_registration/kmod_info.c -o $(BUILD_DIR)/native-registration/kmod_info.o
+	@$(CXX) $(ARCH) $(MINOS) -isysroot $(SDK) -nostdlib -Xlinker -kext -L$(MKSDK)/Library/x86_64 $(BUILD_DIR)/native-registration/registration.o $(BUILD_DIR)/native-registration/kmod_info.o -lkmod -lcc_kext -o $(BUILD_DIR)/native-registration/RTW89NativeRegistration.kext/Contents/MacOS/RTW89NativeRegistration
+	@cp src/native_registration/Info.plist $(BUILD_DIR)/native-registration/RTW89NativeRegistration.kext/Contents/
+	@codesign --force --sign - $(BUILD_DIR)/native-registration/RTW89NativeRegistration.kext
+	@python3 tools/check_kpi.py $(BUILD_DIR)/native-registration/RTW89NativeRegistration.kext
+
+# The seam's decisions (src/native_bridge/rtw89_hw_bridge.h), under the sanitizers.
+.PHONY: bridgetest
+bridgetest:
+	@mkdir -p $(BUILD_DIR)/out
+	@cc -Wall -Wextra -Werror -fsanitize=address,undefined -I$(COMPAT89_DIR) -Isrc/native_bridge tools/hosttest/bridge_test.c -o $(BUILD_DIR)/out/bridge_test
+	@$(BUILD_DIR)/out/bridge_test
+	@python3 tools/hosttest/test_verify_native_bridge.py
+	@python3 tools/hosttest/test_native_power.py
+	@python3 tools/hosttest/test_native_scan.py
+	@python3 tools/hosttest/test_native_join.py
+	@python3 tools/hosttest/test_native_sleep.py
+	@python3 tools/hosttest/test_parse_pklg.py
+	@python3 tools/hosttest/test_boot_load.py
+
+# The native front on the rtw89 driver, in one kext with one owner of the card.
+# The whole backend is in it, so the smoke test gates it like `make kext`.
+BRIDGE_SRC    := $(PROJ_ROOT)/src/native_bridge
+BRIDGE_DIR    := $(BUILD_DIR)/native-bridge
+BRIDGE_BUNDLE := $(BRIDGE_DIR)/RTW89NativeBridge.kext
+BRIDGE_BIN    := $(BRIDGE_BUNDLE)/Contents/MacOS/RTW89NativeBridge
+BRIDGE_VER    := $(shell /usr/libexec/PlistBuddy -c 'Print CFBundleVersion' $(BRIDGE_SRC)/Info.plist)
+# The operations RTW89BridgeInterface answers itself.
+BRIDGE_IMPLEMENTED := getOP_MODE|getSUPPORTED_CHANNELS|getHW_SUPPORTED_CHANNELS|getHW_ADDR|setWCL_SCAN_REQ|setWCL_SCAN_ABORT|setWCL_ASSOCIATE|setWCL_JOIN_ABORT|setWCL_LEAVE_NETWORK|getCHANNEL|getRSSI|getRATE|getMCS|getNSS|getBEACON_INFO|getWCL_BSS_INFO|getWCL_EXTENDED_BSS_INFO|getWCL_TRAFFIC_COUNTERS|getCHANNELS_INFO|getWCL_CHANNELS_INFO|getWCL_LOW_LATENCY_INFO|setWCL_UPDATE_FAST_LANE|setCLEAR_PMKSA_CACHE
+
+.PHONY: nativebridge
+nativebridge: hosttest bridgetest $(BUILD_DIR)/kext/rtw89_logring.o
+	@grep -q '"$(BRIDGE_VER)"' $(BRIDGE_SRC)/RTW89BridgeBase.inc && grep -q '"$(BRIDGE_VER)"' $(BRIDGE_SRC)/kmod_info.c \
+	    || { echo "  version $(BRIDGE_VER) is not the one in RTW89BridgeBase.inc and kmod_info.c"; exit 1; }
+	@rm -rf $(BRIDGE_BUNDLE)
+	@mkdir -p $(dir $(BRIDGE_BIN))
+	@sed -E -e '/IOReturn ($(BRIDGE_IMPLEMENTED))\(/d' -e 's/IOReturn ([A-Za-z0-9_]+)\((.*)\) override \{ return kIOReturnUnsupported; \}/IOReturn \1(\2) override { static volatile SInt32 calls; return unsupported("\1", \&calls); }/' src/native_interface/UnsupportedOperations.inc > $(BRIDGE_DIR)/TracedOperations.inc
+	@echo "  CXX  native_bridge/RTW89NativeBridge.cpp"
+	@$(CXX) $(filter-out -D__IO80211_TARGET=__MAC_13_0,$(KEXT_CXXFLAGS)) -Wno-inconsistent-missing-override -I$(BRIDGE_DIR) -Ireference/tahoe-headers -DAIRPORT_WCL -D__MAC_26_0=260000 -D__MAC_15_2=150200 -D__IO80211_TARGET=260000 -c $(BRIDGE_SRC)/RTW89NativeBridge.cpp -o $(BRIDGE_DIR)/bridge.o
+	@echo "  CXX  native_bridge/RTW89HardwareTransport.cpp"
+	@$(CXX) $(KEXT_CXXFLAGS) $(LOGRING_DEF) -c $(BRIDGE_SRC)/RTW89HardwareTransport.cpp -o $(BRIDGE_DIR)/transport.o
+	@$(CC) $(FW_CFLAGS) -c $(BRIDGE_SRC)/kmod_info.c -o $(BRIDGE_DIR)/kmod_info.o
+	@$(CXX) $(ARCH) $(MINOS) -isysroot $(SDK) -nostdlib -Xlinker -kext -L$(MKSDK)/Library/x86_64 $(ALL_OBJS) $(BUILD_DIR)/kext/rtw89_logring.o $(BRIDGE_DIR)/bridge.o $(BRIDGE_DIR)/transport.o $(BRIDGE_DIR)/kmod_info.o -lkmod -lcc_kext -o $(BRIDGE_BIN)
+	@cp $(BRIDGE_SRC)/Info.plist $(BRIDGE_BUNDLE)/Contents/
+	@mkdir -p $(BRIDGE_BUNDLE)/Contents/Resources
+	@cp LICENSE CREDITS.md $(FIRMWARE_DIR)/LICENCE.rtlwifi_firmware.txt $(BRIDGE_BUNDLE)/Contents/Resources/
+	@codesign --force --sign - $(BRIDGE_BUNDLE)
+	@echo "  KEXT $(BRIDGE_BUNDLE)"
+	@python3 tools/check_kpi.py $(BRIDGE_BUNDLE)
+	@xcrun swiftc tools/native_wifi_scan.swift -o $(BRIDGE_DIR)/native_wifi_scan

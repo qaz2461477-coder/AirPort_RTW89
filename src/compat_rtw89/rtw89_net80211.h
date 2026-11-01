@@ -248,6 +248,9 @@ int rtw89_mlme_set_key(bool pairwise, int idx, const u8 *key, size_t len, u64 rs
 int rtw89_mlme_set_pmk(const u8 *pmk, size_t len);
 bool rtw89_mlme_authorized(void);
 size_t rtw89_mlme_assoc_rsn_ie(u8 *buf, size_t max);
+/* The AP's last beacon, the whole frame: up to @max bytes, or 0 if there is
+ * none or it was being replaced. Any thread, no lock held. */
+size_t rtw89_mlme_copy_beacon(u8 *buf, size_t max);
 /* For tests: see every management frame the MLME transmits. */
 void rtw89_mlme_set_tx_tap(void (*tap)(const u8 *frame, size_t len));
 /* The AP's beacons while associated, FCS on; takes the skb. Any context. */
